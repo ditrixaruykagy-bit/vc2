@@ -14,8 +14,10 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Write Swift files
+      - name: Write source files
         run: |
+          mkdir -p Assets.xcassets/AppIcon.appiconset
+
           cat > VoiceChangerApp.swift << 'ENIFILE'
           import SwiftUI
 
@@ -392,40 +394,38 @@ jobs:
           }
           ENIFILE
 
-          mkdir -p Assets.xcassets/AppIcon.appiconset
           printf '%s' '{"info":{"author":"xcode","version":1}}' > Assets.xcassets/Contents.json
-          printf '%s' '{"images":[{"idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}' > Assets.xcassets/AppIcon.appiconset/Contents.json
+          printf '%s' '{"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}' > Assets.xcassets/AppIcon.appiconset/Contents.json
 
-          cat > Info.plist << 'ENIFILE'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleDisplayName</key>
-              <string>Voice Changer</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.lo.voicechanger</string>
-              <key>CFBundleName</key>
-              <string>VoiceChanger</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>NSMicrophoneUsageDescription</key>
-              <string>Voice Changer needs microphone access.</string>
-              <key>UILaunchScreen</key>
-              <dict/>
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-              </array>
-              <key>UIUserInterfaceStyle</key>
-              <string>Dark</string>
-          </dict>
-          </plist>
-          ENIFILE
+      - name: Generate icon
+        run: |
+          python3 << 'PYEOF'
+          import struct, zlib, math
+          size = 1024
+          def chunk(t, d):
+              c = t + d
+              return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
+          ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+          rows = []
+          c = size / 2
+          for y in range(size):
+              row = b"\x00"
+              for x in range(size):
+                  t = (x + y) / (2 * size)
+                  r = int(15 + 60 * t)
+                  g = int(20 + 50 * t)
+                  b = int(60 + 130 * t)
+                  dx, dy = x - c, y - c
+                  d = math.hypot(dx, dy)
+                  if abs(d - 320) < 55 or d < 110:
+                      r, g, b = 240, 245, 250
+                  row += bytes([r, g, b, 255])
+              rows.append(row)
+          idat = zlib.compress(b"".join(rows))
+          png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+          open("Assets.xcassets/AppIcon.appiconset/icon.png", "wb").write(png)
+          print("Icon written")
+          PYEOF
 
       - name: Write project.yml
         run: |
@@ -448,11 +448,21 @@ jobs:
                 - FloatingWindowManager.swift
                 - PitchSliderView.swift
                 - Assets.xcassets
+              info:
+                path: Info.plist
+                properties:
+                  CFBundleDisplayName: Voice Changer
+                  CFBundleShortVersionString: "1.0"
+                  CFBundleVersion: "1"
+                  NSMicrophoneUsageDescription: Voice Changer needs microphone access.
+                  UILaunchScreen: {}
+                  UISupportedInterfaceOrientations:
+                    - UIInterfaceOrientationPortrait
+                  UIUserInterfaceStyle: Dark
               settings:
                 base:
                   PRODUCT_BUNDLE_IDENTIFIER: com.lo.voicechanger
-                  INFOPLIST_FILE: Info.plist
-                  GENERATE_INFOPLIST_FILE: NO
+                  ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
                   TARGETED_DEVICE_FAMILY: 1
                   SWIFT_VERSION: 5.0
           ENIFILE
