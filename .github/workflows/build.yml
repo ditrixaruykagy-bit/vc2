@@ -49,9 +49,12 @@ jobs:
               private let engine = AVAudioEngine()
               private let pitchUnit = AVAudioUnitTimePitch()
               private var isGraphBuilt = false
-              private var session: AVAudioSession { AVAudioSession.sharedInstance() }
+              private let session = AVAudioSession.sharedInstance()
+              private let stateKey = "vc_running"
+              private let pitchKey = "vc_pitch"
 
               init() {
+                  pitchSemitones = UserDefaults.standard.float(forKey: pitchKey)
                   NotificationCenter.default.addObserver(self, selector: #selector(onInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
                   NotificationCenter.default.addObserver(self, selector: #selector(onRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
               }
@@ -59,8 +62,14 @@ jobs:
               func prepare() {
                   requestPermission { [weak self] granted in
                       DispatchQueue.main.async {
-                          self?.hasPermission = granted
-                          if granted { self?.buildGraphIfNeeded() }
+                          guard let self else { return }
+                          self.hasPermission = granted
+                          if granted {
+                              self.buildGraphIfNeeded()
+                              if UserDefaults.standard.bool(forKey: self.stateKey) {
+                                  self.start()
+                              }
+                          }
                       }
                   }
               }
@@ -77,7 +86,7 @@ jobs:
                   }
                   buildGraphIfNeeded()
                   do {
-                      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+                      try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
                       try session.setPreferredSampleRate(44100)
                       try session.setPreferredIOBufferDuration(0.005)
                       try session.setActive(true)
@@ -87,6 +96,7 @@ jobs:
                       }
                       isRunning = true
                       lastError = nil
+                      UserDefaults.standard.set(true, forKey: stateKey)
                   } catch {
                       lastError = "Audio: \(error.localizedDescription)"
                       isRunning = false
@@ -97,11 +107,13 @@ jobs:
                   engine.stop()
                   try? session.setActive(false, options: .notifyOthersOnDeactivation)
                   isRunning = false
+                  UserDefaults.standard.set(false, forKey: stateKey)
               }
 
               func setPitch(semitones: Float) {
                   pitchSemitones = semitones
                   pitchUnit.pitch = max(-2400, min(2400, semitones * 100))
+                  UserDefaults.standard.set(semitones, forKey: pitchKey)
               }
 
               func nudgePitch(by delta: Float) { setPitch(semitones: pitchSemitones + delta) }
@@ -148,7 +160,7 @@ jobs:
                         let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
                         let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
                   switch reason {
-                  case .oldDeviceUnavailable: DispatchQueue.main.async { self.stop() }
+                  case .oldDeviceUnavailable: if isRunning { DispatchQueue.main.async { self.stop() } }
                   case .newDeviceAvailable: if isRunning { DispatchQueue.main.async { self.start() } }
                   default: break
                   }
@@ -345,9 +357,7 @@ jobs:
 
           cat > FloatingWindowManager.swift << 'ENIFILE'
           import SwiftUI
-          import UIKit
-
-          final class FloatingWindowManager {
+          import UIKit          final class FloatingWindowManager {
               static let shared = FloatingWindowManager()
               private var window: UIWindow?
               private init() {}
@@ -455,6 +465,8 @@ jobs:
                   CFBundleShortVersionString: "1.0"
                   CFBundleVersion: "1"
                   NSMicrophoneUsageDescription: Voice Changer needs microphone access.
+                  UIBackgroundModes:
+                    - audio
                   UILaunchScreen: {}
                   UISupportedInterfaceOrientations:
                     - UIInterfaceOrientationPortrait
