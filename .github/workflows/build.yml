@@ -467,7 +467,8 @@ jobs:
             -target VoiceChanger \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath ./build \
+            SYMROOT="$(pwd)/build" \
+            OBJROOT="$(pwd)/build" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -476,7 +477,7 @@ jobs:
       - name: Package IPA
         run: |
           mkdir -p Payload
-          cp -R ./build/Build/Products/Release-iphoneos/VoiceChanger.app Payload/
+          cp -R ./build/Release-iphoneos/VoiceChanger.app Payload/
           zip -qry VoiceChanger.ipa Payload
 
       - name: Upload IPA
