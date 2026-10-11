@@ -2,7 +2,7 @@ name: Build IPA
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
 
 jobs:
@@ -11,43 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write project
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Write Swift files
         run: |
-          mkdir -p VoiceChanger/VoiceChanger.xcodeproj
-          mkdir -p VoiceChanger/VoiceChanger/Assets.xcassets/AppIcon.appiconset
-
-          cat > VoiceChanger/VoiceChanger/Info.plist << 'ENIFILE'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleDisplayName</key>
-              <string>Voice Changer</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.lo.voicechanger</string>
-              <key>CFBundleName</key>
-              <string>VoiceChanger</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>NSMicrophoneUsageDescription</key>
-              <string>Voice Changer needs microphone access to process your voice.</string>
-              <key>UILaunchScreen</key>
-              <dict/>
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-              </array>
-              <key>UIUserInterfaceStyle</key>
-              <string>Dark</string>
-          </dict>
-          </plist>
-          ENIFILE
-
-          cat > VoiceChanger/VoiceChanger/VoiceChangerApp.swift << 'ENIFILE'
+          cat > VoiceChangerApp.swift << 'ENIFILE'
           import SwiftUI
 
           @main
@@ -64,7 +33,7 @@ jobs:
           }
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger/AudioEngineManager.swift << 'ENIFILE'
+          cat > AudioEngineManager.swift << 'ENIFILE'
           import Foundation
           import AVFoundation
           import Combine
@@ -185,7 +154,7 @@ jobs:
           }
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger/PitchSliderView.swift << 'ENIFILE'
+          cat > PitchSliderView.swift << 'ENIFILE'
           import SwiftUI
 
           struct PitchSliderView: View {
@@ -195,9 +164,7 @@ jobs:
 
               var body: some View {
                   HStack(spacing: 14) {
-                      stepButton(symbol: "plus", tint: Color(red: 0.25, green: 0.55, blue: 1.0)) {
-                          audio.nudgePitch(by: step)
-                      }
+                      stepButton(symbol: "plus", tint: Color(red: 0.25, green: 0.55, blue: 1.0)) { audio.nudgePitch(by: step) }
                       ZStack {
                           Capsule().fill(Color.white.opacity(0.06)).frame(height: 6)
                           GeometryReader { geo in
@@ -218,9 +185,7 @@ jobs:
                               .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
                               .allowsHitTesting(false)
                       }
-                      stepButton(symbol: "minus", tint: Color(red: 0.95, green: 0.30, blue: 0.35)) {
-                          audio.nudgePitch(by: -step)
-                      }
+                      stepButton(symbol: "minus", tint: Color(red: 0.95, green: 0.30, blue: 0.35)) { audio.nudgePitch(by: -step) }
                   }
               }
 
@@ -241,7 +206,7 @@ jobs:
           }
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger/ContentView.swift << 'ENIFILE'
+          cat > ContentView.swift << 'ENIFILE'
           import SwiftUI
 
           struct ContentView: View {
@@ -256,13 +221,8 @@ jobs:
 
                       VStack(spacing: 0) {
                           VStack(spacing: 6) {
-                              Text("VOICE CHANGER")
-                                  .font(.system(size: 26, weight: .heavy, design: .rounded))
-                                  .tracking(4.0)
-                                  .foregroundStyle(LinearGradient(colors: [.white, .white.opacity(0.65)], startPoint: .top, endPoint: .bottom))
-                              Text("real-time pitch - local monitoring")
-                                  .font(.system(size: 11, weight: .medium, design: .rounded))
-                                  .foregroundStyle(.white.opacity(0.35))
+                              Text("VOICE CHANGER").font(.system(size: 26, weight: .heavy, design: .rounded)).tracking(4.0).foregroundStyle(LinearGradient(colors: [.white, .white.opacity(0.65)], startPoint: .top, endPoint: .bottom))
+                              Text("real-time pitch - local monitoring").font(.system(size: 11, weight: .medium, design: .rounded)).foregroundStyle(.white.opacity(0.35))
                           }.padding(.top, 12)
 
                           Spacer()
@@ -283,10 +243,8 @@ jobs:
                                       .overlay(Circle().stroke(main.opacity(0.65), lineWidth: 2).blur(radius: 0.8))
                                       .shadow(color: main.opacity(0.55), radius: 26, y: 12)
                                   VStack(spacing: 6) {
-                                      Image(systemName: audio.isRunning ? "power.circle.fill" : "power.circle")
-                                          .font(.system(size: 30, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
-                                      Text(audio.isRunning ? "ჩართულია" : "გამორთულია")
-                                          .font(.system(size: 20, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                                      Image(systemName: audio.isRunning ? "power.circle.fill" : "power.circle").font(.system(size: 30, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
+                                      Text(audio.isRunning ? "ჩართულია" : "გამორთულია").font(.system(size: 20, weight: .bold, design: .rounded)).foregroundStyle(.white)
                                   }
                               }.scaleEffect(press ? 0.94 : 1.0)
                           }.buttonStyle(.plain)
@@ -300,8 +258,7 @@ jobs:
                                   Text(String(format: "%+.2f st", audio.pitchSemitones)).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Color(red: 0.45, green: 0.70, blue: 1.0))
                               }
                               PitchSliderView().environmentObject(audio)
-                              Text("Local mic monitoring only - other apps still receive raw mic.")
-                                  .font(.system(size: 10, weight: .regular, design: .rounded)).foregroundStyle(.white.opacity(0.30))
+                              Text("Local mic monitoring only - other apps still receive raw mic.").font(.system(size: 10, weight: .regular, design: .rounded)).foregroundStyle(.white.opacity(0.30))
                           }
                           .padding(18)
                           .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.035)).overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.07), lineWidth: 0.6)))
@@ -324,7 +281,7 @@ jobs:
           }
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger/FloatingControlView.swift << 'ENIFILE'
+          cat > FloatingControlView.swift << 'ENIFILE'
           import SwiftUI
 
           struct FloatingControlView: View {
@@ -338,9 +295,7 @@ jobs:
 
               var body: some View {
                   ZStack {
-                      if isPanelOpen {
-                          compactPanel.offset(y: -110).transition(.scale.combined(with: .opacity))
-                      }
+                      if isPanelOpen { compactPanel.offset(y: -110).transition(.scale.combined(with: .opacity)) }
                       circle
                   }
                   .position(x: position.x + drag.width, y: position.y + drag.height)
@@ -386,7 +341,7 @@ jobs:
           }
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger/FloatingWindowManager.swift << 'ENIFILE'
+          cat > FloatingWindowManager.swift << 'ENIFILE'
           import SwiftUI
           import UIKit
 
@@ -437,292 +392,78 @@ jobs:
           }
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger/Assets.xcassets/Contents.json << 'ENIFILE'
-          {"info":{"author":"xcode","version":1}}
+          mkdir -p Assets.xcassets/AppIcon.appiconset
+          printf '%s' '{"info":{"author":"xcode","version":1}}' > Assets.xcassets/Contents.json
+          printf '%s' '{"images":[{"idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}' > Assets.xcassets/AppIcon.appiconset/Contents.json
+
+          cat > Info.plist << 'ENIFILE'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>Voice Changer</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.lo.voicechanger</string>
+              <key>CFBundleName</key>
+              <string>VoiceChanger</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <key>NSMicrophoneUsageDescription</key>
+              <string>Voice Changer needs microphone access.</string>
+              <key>UILaunchScreen</key>
+              <dict/>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+              </array>
+              <key>UIUserInterfaceStyle</key>
+              <string>Dark</string>
+          </dict>
+          </plist>
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger/Assets.xcassets/AppIcon.appiconset/Contents.json << 'ENIFILE'
-          {"images":[{"idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}
+      - name: Write project.yml
+        run: |
+          cat > project.yml << 'ENIFILE'
+          name: VoiceChanger
+          options:
+            bundleIdPrefix: com.lo
+            deploymentTarget:
+              iOS: "17.0"
+            createIntermediateGroups: true
+          targets:
+            VoiceChanger:
+              type: application
+              platform: iOS
+              sources:
+                - VoiceChangerApp.swift
+                - ContentView.swift
+                - AudioEngineManager.swift
+                - FloatingControlView.swift
+                - FloatingWindowManager.swift
+                - PitchSliderView.swift
+                - Assets.xcassets
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.lo.voicechanger
+                  INFOPLIST_FILE: Info.plist
+                  GENERATE_INFOPLIST_FILE: NO
+                  TARGETED_DEVICE_FAMILY: 1
+                  SWIFT_VERSION: 5.0
           ENIFILE
 
-          cat > VoiceChanger/VoiceChanger.xcodeproj/project.pbxproj << 'ENIFILE'
-// !$*UTF8*$!
-{
-	archiveVersion = 1;
-	classes = {
-	};
-	objectVersion = 56;
-	objects = {
+      - name: Generate Xcode project
+        run: xcodegen generate
 
-/* Begin PBXBuildFile section */
-		CC0000000000000000000001 /* VoiceChangerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* VoiceChangerApp.swift */; };
-		CC0000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* ContentView.swift */; };
-		CC0000000000000000000003 /* AudioEngineManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* AudioEngineManager.swift */; };
-		CC0000000000000000000004 /* FloatingControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000004 /* FloatingControlView.swift */; };
-		CC0000000000000000000005 /* FloatingWindowManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* FloatingWindowManager.swift */; };
-		CC0000000000000000000006 /* PitchSliderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000006 /* PitchSliderView.swift */; };
-		CC0000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* Assets.xcassets */; };
-/* End PBXBuildFile section */
-
-/* Begin PBXFileReference section */
-		AA0000000000000000000006 /* VoiceChanger.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceChanger.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		BB0000000000000000000001 /* VoiceChangerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChangerApp.swift; sourceTree = "<group>"; };
-		BB0000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		BB0000000000000000000003 /* AudioEngineManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineManager.swift; sourceTree = "<group>"; };
-		BB0000000000000000000004 /* FloatingControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingControlView.swift; sourceTree = "<group>"; };
-		BB0000000000000000000005 /* FloatingWindowManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingWindowManager.swift; sourceTree = "<group>"; };
-		BB0000000000000000000006 /* PitchSliderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PitchSliderView.swift; sourceTree = "<group>"; };
-		BB0000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		BB0000000000000000000008 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-/* End PBXFileReference section */
-
-/* Begin PBXFrameworksBuildPhase section */
-		AA0000000000000000000008 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXFrameworksBuildPhase section */
-
-/* Begin PBXGroup section */
-		AA0000000000000000000002 = {
-			isa = PBXGroup;
-			children = (
-				AA0000000000000000000004 /* VoiceChanger */,
-				AA0000000000000000000003 /* Products */,
-			);
-			sourceTree = "<group>";
-		};
-		AA0000000000000000000003 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				AA0000000000000000000006 /* VoiceChanger.app */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		AA0000000000000000000004 /* VoiceChanger */ = {
-			isa = PBXGroup;
-			children = (
-				BB0000000000000000000001 /* VoiceChangerApp.swift */,
-				BB0000000000000000000002 /* ContentView.swift */,
-				BB0000000000000000000003 /* AudioEngineManager.swift */,
-				BB0000000000000000000004 /* FloatingControlView.swift */,
-				BB0000000000000000000005 /* FloatingWindowManager.swift */,
-				BB0000000000000000000006 /* PitchSliderView.swift */,
-				BB0000000000000000000007 /* Info.plist */,
-				BB0000000000000000000008 /* Assets.xcassets */,
-			);
-			path = VoiceChanger;
-			sourceTree = "<group>";
-		};
-/* End PBXGroup section */
-
-/* Begin PBXNativeTarget section */
-		AA0000000000000000000005 /* VoiceChanger */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = AA000000000000000000000B /* Build configuration list for PBXNativeTarget "VoiceChanger" */;
-			buildPhases = (
-				AA0000000000000000000007 /* Sources */,
-				AA0000000000000000000008 /* Frameworks */,
-				AA0000000000000000000009 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = VoiceChanger;
-			productName = VoiceChanger;
-			productReference = AA0000000000000000000006 /* VoiceChanger.app */;
-			productType = "com.apple.product-type.application";
-		};
-/* End PBXNativeTarget section */
-
-/* Begin PBXProject section */
-		AA0000000000000000000001 /* Project object */ = {
-			isa = PBXProject;
-			attributes = {
-				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1500;
-				LastUpgradeCheck = 1500;
-				TargetAttributes = {
-					AA0000000000000000000005 = {
-						CreatedOnToolsVersion = 15.0;
-					};
-				};
-			};
-			buildConfigurationList = AA000000000000000000000A /* Build configuration list for PBXProject "VoiceChanger" */;
-			compatibilityVersion = "Xcode 14.0";
-			developmentRegion = en;
-			hasScannedForEncodings = 0;
-			knownRegions = (
-				en,
-				Base,
-			);
-			mainGroup = AA0000000000000000000002;
-			productRefGroup = AA0000000000000000000003 /* Products */;
-			projectDirPath = "";
-			projectRoot = "";
-			targets = (
-				AA0000000000000000000005 /* VoiceChanger */,
-			);
-		};
-/* End PBXProject section */
-
-/* Begin PBXResourcesBuildPhase section */
-		AA0000000000000000000009 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				CC0000000000000000000007 /* Assets.xcassets in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
-
-/* Begin PBXSourcesBuildPhase section */
-		AA0000000000000000000007 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				CC0000000000000000000001 /* VoiceChangerApp.swift in Sources */,
-				CC0000000000000000000002 /* ContentView.swift in Sources */,
-				CC0000000000000000000003 /* AudioEngineManager.swift in Sources */,
-				CC0000000000000000000004 /* FloatingControlView.swift in Sources */,
-				CC0000000000000000000005 /* FloatingWindowManager.swift in Sources */,
-				CC0000000000000000000006 /* PitchSliderView.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXSourcesBuildPhase section */
-
-/* Begin XCBuildConfiguration section */
-		AA000000000000000000000C /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_TESTABILITY = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				GCC_DYNAMIC_NO_PIC = NO;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_OPTIMIZATION_LEVEL = 0;
-				GCC_PREPROCESSOR_DEFINITIONS = (
-					"DEBUG=1",
-					"$(inherited)",
-				);
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
-				MTL_FAST_MATH = YES;
-				ONLY_ACTIVE_ARCH = YES;
-				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
-				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-			};
-			name = Debug;
-		};
-		AA000000000000000000000D /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				GCC_NO_COMMON_BLOCKS = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
-				SDKROOT = iphoneos;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
-		AA000000000000000000000E /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = VoiceChanger/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.lo.voicechanger;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Debug;
-		};
-		AA000000000000000000000F /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = VoiceChanger/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.lo.voicechanger;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-			};
-			name = Release;
-		};
-/* End XCBuildConfiguration section */
-
-/* Begin XCConfigurationList section */
-		AA000000000000000000000A /* Build configuration list for PBXProject "VoiceChanger" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AA000000000000000000000C /* Debug */,
-				AA000000000000000000000D /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		AA000000000000000000000B /* Build configuration list for PBXNativeTarget "VoiceChanger" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AA000000000000000000000E /* Debug */,
-				AA000000000000000000000F /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-/* End XCConfigurationList section */
-	};
-	rootObject = AA0000000000000000000001 /* Project object */;
-}
-          ENIFILE
-
-      - name: Build
+      - name: Build app
         run: |
           xcodebuild \
-            -project VoiceChanger/VoiceChanger.xcodeproj \
+            -project VoiceChanger.xcodeproj \
             -target VoiceChanger \
             -configuration Release \
             -sdk iphoneos \
@@ -738,7 +479,7 @@ jobs:
           cp -R ./build/Build/Products/Release-iphoneos/VoiceChanger.app Payload/
           zip -qry VoiceChanger.ipa Payload
 
-      - name: Upload
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: VoiceChanger-IPA
