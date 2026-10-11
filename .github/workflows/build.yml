@@ -357,7 +357,9 @@ jobs:
 
           cat > FloatingWindowManager.swift << 'ENIFILE'
           import SwiftUI
-          import UIKit          final class FloatingWindowManager {
+          import UIKit
+
+          final class FloatingWindowManager {
               static let shared = FloatingWindowManager()
               private var window: UIWindow?
               private init() {}
