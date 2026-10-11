@@ -1,0 +1,745 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write project
+        run: |
+          mkdir -p VoiceChanger/VoiceChanger.xcodeproj
+          mkdir -p VoiceChanger/VoiceChanger/Assets.xcassets/AppIcon.appiconset
+
+          cat > VoiceChanger/VoiceChanger/Info.plist << 'ENIFILE'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>Voice Changer</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.lo.voicechanger</string>
+              <key>CFBundleName</key>
+              <string>VoiceChanger</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <key>NSMicrophoneUsageDescription</key>
+              <string>Voice Changer needs microphone access to process your voice.</string>
+              <key>UILaunchScreen</key>
+              <dict/>
+              <key>UISupportedInterfaceOrientations</key>
+              <array>
+                  <string>UIInterfaceOrientationPortrait</string>
+              </array>
+              <key>UIUserInterfaceStyle</key>
+              <string>Dark</string>
+          </dict>
+          </plist>
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/VoiceChangerApp.swift << 'ENIFILE'
+          import SwiftUI
+
+          @main
+          struct VoiceChangerApp: App {
+              @StateObject private var audio = AudioEngineManager()
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                          .environmentObject(audio)
+                          .preferredColorScheme(.dark)
+                          .onAppear { audio.prepare() }
+                  }
+              }
+          }
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/AudioEngineManager.swift << 'ENIFILE'
+          import Foundation
+          import AVFoundation
+          import Combine
+
+          final class AudioEngineManager: ObservableObject {
+              @Published var isRunning: Bool = false
+              @Published var pitchSemitones: Float = 0.0
+              @Published var hasPermission: Bool = false
+              @Published var lastError: String?
+
+              private let engine = AVAudioEngine()
+              private let pitchUnit = AVAudioUnitTimePitch()
+              private var isGraphBuilt = false
+              private var session: AVAudioSession { AVAudioSession.sharedInstance() }
+
+              init() {
+                  NotificationCenter.default.addObserver(self, selector: #selector(onInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
+                  NotificationCenter.default.addObserver(self, selector: #selector(onRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+              }
+
+              func prepare() {
+                  requestPermission { [weak self] granted in
+                      DispatchQueue.main.async {
+                          self?.hasPermission = granted
+                          if granted { self?.buildGraphIfNeeded() }
+                      }
+                  }
+              }
+
+              func toggle() { isRunning ? stop() : start() }
+
+              func start() {
+                  guard hasPermission else {
+                      requestPermission { [weak self] g in
+                          guard let self, g else { return }
+                          DispatchQueue.main.async { self.hasPermission = true; self.start() }
+                      }
+                      return
+                  }
+                  buildGraphIfNeeded()
+                  do {
+                      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+                      try session.setPreferredSampleRate(44100)
+                      try session.setPreferredIOBufferDuration(0.005)
+                      try session.setActive(true)
+                      if !engine.isRunning {
+                          engine.prepare()
+                          try engine.start()
+                      }
+                      isRunning = true
+                      lastError = nil
+                  } catch {
+                      lastError = "Audio: \(error.localizedDescription)"
+                      isRunning = false
+                  }
+              }
+
+              func stop() {
+                  engine.stop()
+                  try? session.setActive(false, options: .notifyOthersOnDeactivation)
+                  isRunning = false
+              }
+
+              func setPitch(semitones: Float) {
+                  pitchSemitones = semitones
+                  pitchUnit.pitch = max(-2400, min(2400, semitones * 100))
+              }
+
+              func nudgePitch(by delta: Float) { setPitch(semitones: pitchSemitones + delta) }
+
+              private func buildGraphIfNeeded() {
+                  guard !isGraphBuilt else { return }
+                  let input = engine.inputNode
+                  let format = input.inputFormat(forBus: 0)
+                  engine.attach(pitchUnit)
+                  engine.connect(input, to: pitchUnit, format: format)
+                  engine.connect(pitchUnit, to: engine.mainMixerNode, format: format)
+                  engine.mainMixerNode.outputVolume = 1.0
+                  pitchUnit.overlap = 8.0
+                  pitchUnit.rate = 1.0
+                  pitchUnit.pitch = pitchSemitones * 100
+                  isGraphBuilt = true
+              }
+
+              private func requestPermission(completion: @escaping (Bool) -> Void) {
+                  if #available(iOS 17.0, *) {
+                      AVAudioApplication.requestRecordPermission { completion($0) }
+                  } else {
+                      session.requestRecordPermission { completion($0) }
+                  }
+              }
+
+              @objc private func onInterruption(_ note: Notification) {
+                  guard let info = note.userInfo,
+                        let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+                        let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+                  switch type {
+                  case .began: DispatchQueue.main.async { self.isRunning = false }
+                  case .ended:
+                      guard let oRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+                      if AVAudioSession.InterruptionOptions(rawValue: oRaw).contains(.shouldResume) {
+                          DispatchQueue.main.async { self.start() }
+                      }
+                  @unknown default: break
+                  }
+              }
+
+              @objc private func onRouteChange(_ note: Notification) {
+                  guard let info = note.userInfo,
+                        let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                        let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+                  switch reason {
+                  case .oldDeviceUnavailable: DispatchQueue.main.async { self.stop() }
+                  case .newDeviceAvailable: if isRunning { DispatchQueue.main.async { self.start() } }
+                  default: break
+                  }
+              }
+          }
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/PitchSliderView.swift << 'ENIFILE'
+          import SwiftUI
+
+          struct PitchSliderView: View {
+              @EnvironmentObject var audio: AudioEngineManager
+              private let step: Float = 0.20
+              private let range: ClosedRange<Float> = -12.0...12.0
+
+              var body: some View {
+                  HStack(spacing: 14) {
+                      stepButton(symbol: "plus", tint: Color(red: 0.25, green: 0.55, blue: 1.0)) {
+                          audio.nudgePitch(by: step)
+                      }
+                      ZStack {
+                          Capsule().fill(Color.white.opacity(0.06)).frame(height: 6)
+                          GeometryReader { geo in
+                              let pct = normalized(pitch: audio.pitchSemitones)
+                              Capsule()
+                                  .fill(LinearGradient(colors: [Color(red: 0.20, green: 0.45, blue: 1.0), Color(red: 0.35, green: 0.65, blue: 1.0)], startPoint: .leading, endPoint: .trailing))
+                                  .frame(width: max(0, geo.size.width * pct), height: 6)
+                          }.frame(height: 6)
+                          Slider(value: Binding(get: { audio.pitchSemitones }, set: { v in
+                              let s = (v / step).rounded() * step
+                              audio.setPitch(semitones: s)
+                          }), in: range).tint(.clear).opacity(0.02)
+                          Text(String(format: "%+.2f", audio.pitchSemitones))
+                              .font(.system(size: 15, weight: .semibold, design: .rounded))
+                              .foregroundStyle(.white)
+                              .padding(.horizontal, 10).padding(.vertical, 4)
+                              .background(Capsule().fill(Color.black.opacity(0.55)))
+                              .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+                              .allowsHitTesting(false)
+                      }
+                      stepButton(symbol: "minus", tint: Color(red: 0.95, green: 0.30, blue: 0.35)) {
+                          audio.nudgePitch(by: -step)
+                      }
+                  }
+              }
+
+              private func normalized(pitch: Float) -> CGFloat {
+                  let c = max(range.lowerBound, min(range.upperBound, pitch))
+                  return CGFloat((c - range.lowerBound) / (range.upperBound - range.lowerBound))
+              }
+
+              private func stepButton(symbol: String, tint: Color, action: @escaping () -> Void) -> some View {
+                  Button(action: action) {
+                      Image(systemName: symbol)
+                          .font(.system(size: 16, weight: .bold))
+                          .foregroundStyle(.white)
+                          .frame(width: 44, height: 44)
+                          .background(Circle().fill(LinearGradient(colors: [tint.opacity(0.9), tint.opacity(0.6)], startPoint: .top, endPoint: .bottom)).shadow(color: tint.opacity(0.4), radius: 8, y: 4))
+                  }.buttonStyle(.plain)
+              }
+          }
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/ContentView.swift << 'ENIFILE'
+          import SwiftUI
+
+          struct ContentView: View {
+              @EnvironmentObject var audio: AudioEngineManager
+              @State private var press: Bool = false
+
+              var body: some View {
+                  ZStack {
+                      Color(red: 0.03, green: 0.03, blue: 0.05).ignoresSafeArea()
+                      RadialGradient(colors: [Color(red: 0.10, green: 0.18, blue: 0.45).opacity(0.55), .clear], center: .top, startRadius: 10, endRadius: 520).ignoresSafeArea()
+                      RadialGradient(colors: [Color(red: 0.45, green: 0.06, blue: 0.12).opacity(0.35), .clear], center: .bottom, startRadius: 10, endRadius: 460).ignoresSafeArea()
+
+                      VStack(spacing: 0) {
+                          VStack(spacing: 6) {
+                              Text("VOICE CHANGER")
+                                  .font(.system(size: 26, weight: .heavy, design: .rounded))
+                                  .tracking(4.0)
+                                  .foregroundStyle(LinearGradient(colors: [.white, .white.opacity(0.65)], startPoint: .top, endPoint: .bottom))
+                              Text("real-time pitch - local monitoring")
+                                  .font(.system(size: 11, weight: .medium, design: .rounded))
+                                  .foregroundStyle(.white.opacity(0.35))
+                          }.padding(.top, 12)
+
+                          Spacer()
+
+                          Button(action: {
+                              withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { press = true }
+                              audio.toggle()
+                              DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                  withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { press = false }
+                              }
+                          }) {
+                              ZStack {
+                                  Circle().fill(glow.opacity(audio.isRunning ? 0.42 : 0.20)).frame(width: 240, height: 240).blur(radius: 34)
+                                  Circle()
+                                      .fill(RadialGradient(colors: [main.opacity(0.95), main.opacity(0.62)], center: .topLeading, startRadius: 4, endRadius: 150))
+                                      .frame(width: 200, height: 200)
+                                      .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 1))
+                                      .overlay(Circle().stroke(main.opacity(0.65), lineWidth: 2).blur(radius: 0.8))
+                                      .shadow(color: main.opacity(0.55), radius: 26, y: 12)
+                                  VStack(spacing: 6) {
+                                      Image(systemName: audio.isRunning ? "power.circle.fill" : "power.circle")
+                                          .font(.system(size: 30, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
+                                      Text(audio.isRunning ? "ჩართულია" : "გამორთულია")
+                                          .font(.system(size: 20, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                                  }
+                              }.scaleEffect(press ? 0.94 : 1.0)
+                          }.buttonStyle(.plain)
+
+                          Spacer()
+
+                          VStack(alignment: .leading, spacing: 14) {
+                              HStack {
+                                  Text("PITCH").font(.system(size: 11, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.45)).tracking(1.6)
+                                  Spacer()
+                                  Text(String(format: "%+.2f st", audio.pitchSemitones)).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Color(red: 0.45, green: 0.70, blue: 1.0))
+                              }
+                              PitchSliderView().environmentObject(audio)
+                              Text("Local mic monitoring only - other apps still receive raw mic.")
+                                  .font(.system(size: 10, weight: .regular, design: .rounded)).foregroundStyle(.white.opacity(0.30))
+                          }
+                          .padding(18)
+                          .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.035)).overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.07), lineWidth: 0.6)))
+                          .padding(.bottom, 8)
+
+                          HStack(spacing: 6) {
+                              Circle().fill(audio.isRunning ? Color.green : Color.red).frame(width: 7, height: 7)
+                              Text(audio.isRunning ? "ACTIVE" : "INACTIVE").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.55)).tracking(1.4)
+                              Spacer()
+                              if let e = audio.lastError { Text(e).font(.system(size: 10)).foregroundStyle(Color.red.opacity(0.7)).lineLimit(1) }
+                              else { Text("iOS \(UIDevice.current.systemVersion)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.30)) }
+                          }.padding(.top, 8)
+                      }
+                      .padding(.horizontal, 28).padding(.vertical, 32)
+                  }
+              }
+
+              private var main: Color { audio.isRunning ? Color(red: 0.15, green: 0.78, blue: 0.35) : Color(red: 0.92, green: 0.22, blue: 0.28) }
+              private var glow: Color { audio.isRunning ? .green : .red }
+          }
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/FloatingControlView.swift << 'ENIFILE'
+          import SwiftUI
+
+          struct FloatingControlView: View {
+              @EnvironmentObject var audio: AudioEngineManager
+              @Binding var position: CGPoint
+              @Binding var isPanelOpen: Bool
+              var onClose: () -> Void
+              @GestureState private var drag: CGSize = .zero
+              @State private var pulse: Bool = false
+              private let diameter: CGFloat = 62
+
+              var body: some View {
+                  ZStack {
+                      if isPanelOpen {
+                          compactPanel.offset(y: -110).transition(.scale.combined(with: .opacity))
+                      }
+                      circle
+                  }
+                  .position(x: position.x + drag.width, y: position.y + drag.height)
+                  .gesture(DragGesture(minimumDistance: 2)
+                      .updating($drag) { v, s, _ in s = v.translation }
+                      .onEnded { v in position = CGPoint(x: position.x + v.translation.width, y: position.y + v.translation.height) })
+                  .onTapGesture { withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) { isPanelOpen.toggle() } }
+              }
+
+              private var circle: some View {
+                  ZStack {
+                      Circle().fill(Color.red.opacity(0.18)).frame(width: diameter + 18, height: diameter + 18).blur(radius: 10).scaleEffect(pulse ? 1.06 : 1.0)
+                      Circle()
+                          .fill(RadialGradient(colors: [Color.red.opacity(0.65), Color.red.opacity(0.38)], center: .center, startRadius: 2, endRadius: diameter / 2))
+                          .frame(width: diameter, height: diameter)
+                          .overlay(Circle().stroke(Color.white.opacity(0.35), lineWidth: 0.8))
+                          .shadow(color: Color.red.opacity(0.55), radius: 12, y: 4)
+                      Image(systemName: "waveform").font(.system(size: 22, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
+                  }
+                  .onAppear { withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { pulse = true } }
+              }
+
+              private var compactPanel: some View {
+                  VStack(spacing: 12) {
+                      HStack {
+                          Text("PITCH").font(.system(size: 11, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.55))
+                          Spacer()
+                          Button(action: { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { isPanelOpen = false }; onClose() }) {
+                              Image(systemName: "xmark.circle.fill").font(.system(size: 18)).foregroundStyle(.white.opacity(0.65))
+                          }.buttonStyle(.plain)
+                      }
+                      PitchSliderView().environmentObject(audio)
+                      HStack(spacing: 8) {
+                          Circle().fill(audio.isRunning ? Color.green : Color.red).frame(width: 8, height: 8)
+                          Text(audio.isRunning ? "LIVE" : "IDLE").font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(.white.opacity(0.7))
+                          Spacer()
+                          Text("mic monitoring").font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
+                      }
+                  }
+                  .padding(14).frame(width: 260)
+                  .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.ultraThinMaterial).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 0.5)).shadow(color: .black.opacity(0.4), radius: 16, y: 8))
+              }
+          }
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/FloatingWindowManager.swift << 'ENIFILE'
+          import SwiftUI
+          import UIKit
+
+          final class FloatingWindowManager {
+              static let shared = FloatingWindowManager()
+              private var window: UIWindow?
+              private init() {}
+              func show(in scene: UIWindowScene, audio: AudioEngineManager) {
+                  guard window == nil else { return }
+                  let initial = CGPoint(x: scene.coordinateSpace.bounds.width - 60, y: scene.coordinateSpace.bounds.height - 160)
+                  let container = FloatingContainer(audio: audio, initialPosition: initial, onClose: { [weak self] in self?.hide() })
+                  let host = UIHostingController(rootView: container)
+                  host.view.backgroundColor = .clear
+                  let w = PassthroughWindow(windowScene: scene)
+                  w.rootViewController = host
+                  w.windowLevel = .alert + 1
+                  w.backgroundColor = .clear
+                  w.isHidden = false
+                  window = w
+              }
+              func hide() { window?.isHidden = true; window = nil }
+          }
+
+          private final class PassthroughWindow: UIWindow {
+              override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+                  guard let hit = super.hitTest(point, with: event) else { return nil }
+                  if hit == rootViewController?.view { return nil }
+                  return hit
+              }
+          }
+
+          struct FloatingContainer: View {
+              @ObservedObject var audio: AudioEngineManager
+              @State private var position: CGPoint
+              @State private var isPanelOpen: Bool = false
+              var onClose: () -> Void
+              init(audio: AudioEngineManager, initialPosition: CGPoint, onClose: @escaping () -> Void) {
+                  self.audio = audio
+                  self._position = State(initialValue: initialPosition)
+                  self.onClose = onClose
+              }
+              var body: some View {
+                  FloatingControlView(position: $position, isPanelOpen: $isPanelOpen, onClose: onClose)
+                      .environmentObject(audio)
+                      .frame(maxWidth: .infinity, maxHeight: .infinity)
+                      .background(Color.clear)
+              }
+          }
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/Assets.xcassets/Contents.json << 'ENIFILE'
+          {"info":{"author":"xcode","version":1}}
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger/Assets.xcassets/AppIcon.appiconset/Contents.json << 'ENIFILE'
+          {"images":[{"idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}
+          ENIFILE
+
+          cat > VoiceChanger/VoiceChanger.xcodeproj/project.pbxproj << 'ENIFILE'
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		CC0000000000000000000001 /* VoiceChangerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000001 /* VoiceChangerApp.swift */; };
+		CC0000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* ContentView.swift */; };
+		CC0000000000000000000003 /* AudioEngineManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000003 /* AudioEngineManager.swift */; };
+		CC0000000000000000000004 /* FloatingControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000004 /* FloatingControlView.swift */; };
+		CC0000000000000000000005 /* FloatingWindowManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000005 /* FloatingWindowManager.swift */; };
+		CC0000000000000000000006 /* PitchSliderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000006 /* PitchSliderView.swift */; };
+		CC0000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000008 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000006 /* VoiceChanger.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceChanger.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000001 /* VoiceChangerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChangerApp.swift; sourceTree = "<group>"; };
+		BB0000000000000000000002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		BB0000000000000000000003 /* AudioEngineManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineManager.swift; sourceTree = "<group>"; };
+		BB0000000000000000000004 /* FloatingControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingControlView.swift; sourceTree = "<group>"; };
+		BB0000000000000000000005 /* FloatingWindowManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingWindowManager.swift; sourceTree = "<group>"; };
+		BB0000000000000000000006 /* PitchSliderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PitchSliderView.swift; sourceTree = "<group>"; };
+		BB0000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB0000000000000000000008 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA0000000000000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA0000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000004 /* VoiceChanger */,
+				AA0000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000006 /* VoiceChanger.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000004 /* VoiceChanger */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000001 /* VoiceChangerApp.swift */,
+				BB0000000000000000000002 /* ContentView.swift */,
+				BB0000000000000000000003 /* AudioEngineManager.swift */,
+				BB0000000000000000000004 /* FloatingControlView.swift */,
+				BB0000000000000000000005 /* FloatingWindowManager.swift */,
+				BB0000000000000000000006 /* PitchSliderView.swift */,
+				BB0000000000000000000007 /* Info.plist */,
+				BB0000000000000000000008 /* Assets.xcassets */,
+			);
+			path = VoiceChanger;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA0000000000000000000005 /* VoiceChanger */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA000000000000000000000B /* Build configuration list for PBXNativeTarget "VoiceChanger" */;
+			buildPhases = (
+				AA0000000000000000000007 /* Sources */,
+				AA0000000000000000000008 /* Frameworks */,
+				AA0000000000000000000009 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VoiceChanger;
+			productName = VoiceChanger;
+			productReference = AA0000000000000000000006 /* VoiceChanger.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					AA0000000000000000000005 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = AA000000000000000000000A /* Build configuration list for PBXProject "VoiceChanger" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA0000000000000000000002;
+			productRefGroup = AA0000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA0000000000000000000005 /* VoiceChanger */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AA0000000000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC0000000000000000000007 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA0000000000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC0000000000000000000001 /* VoiceChangerApp.swift in Sources */,
+				CC0000000000000000000002 /* ContentView.swift in Sources */,
+				CC0000000000000000000003 /* AudioEngineManager.swift in Sources */,
+				CC0000000000000000000004 /* FloatingControlView.swift in Sources */,
+				CC0000000000000000000005 /* FloatingWindowManager.swift in Sources */,
+				CC0000000000000000000006 /* PitchSliderView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AA000000000000000000000C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AA000000000000000000000D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AA000000000000000000000E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = VoiceChanger/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lo.voicechanger;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		AA000000000000000000000F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = VoiceChanger/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.lo.voicechanger;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA000000000000000000000A /* Build configuration list for PBXProject "VoiceChanger" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA000000000000000000000C /* Debug */,
+				AA000000000000000000000D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA000000000000000000000B /* Build configuration list for PBXNativeTarget "VoiceChanger" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA000000000000000000000E /* Debug */,
+				AA000000000000000000000F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA0000000000000000000001 /* Project object */;
+}
+          ENIFILE
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project VoiceChanger/VoiceChanger.xcodeproj \
+            -target VoiceChanger \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath ./build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R ./build/Build/Products/Release-iphoneos/VoiceChanger.app Payload/
+          zip -qry VoiceChanger.ipa Payload
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceChanger-IPA
+          path: VoiceChanger.ipa
