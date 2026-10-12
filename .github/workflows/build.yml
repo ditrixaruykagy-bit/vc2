@@ -55,7 +55,12 @@ jobs:
               private let stepKey = "vc_step"
 
               init() {
-                  pitchSemitones = UserDefaults.standard.float(forKey: pitchKey)
+                  if UserDefaults.standard.object(forKey: pitchKey) == nil {
+                      pitchSemitones = 5.0
+                      UserDefaults.standard.set(5.0, forKey: pitchKey)
+                  } else {
+                      pitchSemitones = UserDefaults.standard.float(forKey: pitchKey)
+                  }
                   if let prev = UserDefaults.standard.string(forKey: stepKey) {
                       lastStep = "prev: " + prev
                   }
@@ -99,7 +104,6 @@ jobs:
                   }
                   mark("C permOK")
                   stopInternal()
-                  mark("D stopped")
 
                   do {
                       mark("E setCategory")
@@ -109,9 +113,11 @@ jobs:
                       mark("G active")
 
                       let eng = AVAudioEngine()
-                      mark("H eng")
                       let unit = AVAudioUnitTimePitch()
-                      mark("I unit")
+                      unit.pitch = max(-2400, min(2400, pitchSemitones * 100))
+                      unit.overlap = 8.0
+                      unit.rate = 1.0
+                      mark("H unit cfg pitch=\(Int(unit.pitch))")
 
                       let input = eng.inputNode
                       let fmt = input.inputFormat(forBus: 0)
@@ -126,12 +132,12 @@ jobs:
                       eng.connect(input, to: unit, format: fmt)
                       mark("L conn1")
                       eng.connect(unit, to: eng.mainMixerNode, format: nil)
-                      mark("M conn2")
+                      eng.mainMixerNode.outputVolume = 1.0
+                      mark("M conn2 vol=1.0")
 
                       eng.prepare()
-                      mark("N prepared")
                       try eng.start()
-                      mark("O started")
+                      mark("O started pitch=\(Int(unit.pitch))")
 
                       self.engine = eng
                       self.pitchUnit = unit
@@ -166,6 +172,7 @@ jobs:
                   pitchSemitones = semitones
                   pitchUnit?.pitch = max(-2400, min(2400, semitones * 100))
                   UserDefaults.standard.set(semitones, forKey: pitchKey)
+                  mark("pitch=\(Int(semitones * 100))c")
               }
 
               func nudgePitch(by delta: Float) { setPitch(semitones: pitchSemitones + delta) }
