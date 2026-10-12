@@ -76,7 +76,7 @@ jobs:
 
               private func errText(_ e: Error) -> String {
                   let ns = e as NSError
-                  return "\(ns.domain)#\(ns.code): \(ns.localizedDescription)"
+                  return "\(ns.domain)#\(ns.code)"
               }
 
               func prepare() {
@@ -117,27 +117,30 @@ jobs:
                       unit.pitch = max(-2400, min(2400, pitchSemitones * 100))
                       unit.overlap = 8.0
                       unit.rate = 1.0
-                      mark("H unit cfg pitch=\(Int(unit.pitch))")
 
                       let input = eng.inputNode
-                      let fmt = input.inputFormat(forBus: 0)
-                      mark("J fmt \(Int(fmt.sampleRate))Hz \(fmt.channelCount)ch")
+                      let rawFmt = input.inputFormat(forBus: 0)
+                      mark("J raw \(Int(rawFmt.sampleRate))Hz \(rawFmt.channelCount)ch")
 
-                      guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
-                          throw NSError(domain: "VC", code: 1, userInfo: [NSLocalizedDescriptionKey: "mic format 0Hz or 0ch"])
+                      guard rawFmt.sampleRate > 0, rawFmt.channelCount > 0 else {
+                          throw NSError(domain: "VC", code: 1, userInfo: [NSLocalizedDescriptionKey: "mic format 0Hz/0ch"])
                       }
 
+                      guard let stdFmt = AVAudioFormat(standardFormatWithSampleRate: rawFmt.sampleRate, channels: rawFmt.channelCount) else {
+                          throw NSError(domain: "VC", code: 2, userInfo: [NSLocalizedDescriptionKey: "cannot create std format"])
+                      }
+                      mark("K std \(Int(stdFmt.sampleRate))Hz \(stdFmt.channelCount)ch")
+
                       eng.attach(unit)
-                      mark("K attach")
-                      eng.connect(input, to: unit, format: fmt)
+                      eng.connect(input, to: unit, format: stdFmt)
                       mark("L conn1")
-                      eng.connect(unit, to: eng.mainMixerNode, format: nil)
+                      eng.connect(unit, to: eng.mainMixerNode, format: stdFmt)
                       eng.mainMixerNode.outputVolume = 1.0
-                      mark("M conn2 vol=1.0")
+                      mark("M conn2")
 
                       eng.prepare()
                       try eng.start()
-                      mark("O started pitch=\(Int(unit.pitch))")
+                      mark("O started pitch=\(Int(unit.pitch))c")
 
                       self.engine = eng
                       self.pitchUnit = unit
