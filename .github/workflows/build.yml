@@ -46,9 +46,8 @@ jobs:
               @Published var hasPermission: Bool = false
               @Published var lastError: String?
 
-              private let engine = AVAudioEngine()
-              private let pitchUnit = AVAudioUnitTimePitch()
-              private var isGraphBuilt = false
+              private var engine: AVAudioEngine?
+              private var pitchUnit: AVAudioUnitTimePitch?
               private let session = AVAudioSession.sharedInstance()
               private let stateKey = "vc_running"
               private let pitchKey = "vc_pitch"
@@ -64,17 +63,16 @@ jobs:
                       DispatchQueue.main.async {
                           guard let self else { return }
                           self.hasPermission = granted
-                          if granted {
-                              self.buildGraphIfNeeded()
-                              if UserDefaults.standard.bool(forKey: self.stateKey) {
-                                  self.start()
-                              }
+                          if granted && UserDefaults.standard.bool(forKey: self.stateKey) {
+                              self.start()
                           }
                       }
                   }
               }
 
-              func toggle() { isRunning ? stop() : start() }
+              func toggle() {
+                  if isRunning { stop() } else { start() }
+              }
 
               func start() {
                   guard hasPermission else {
@@ -84,53 +82,68 @@ jobs:
                       }
                       return
                   }
-                  buildGraphIfNeeded()
+
+                  stopInternal()
+
                   do {
                       try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
                       try session.setPreferredSampleRate(44100)
                       try session.setPreferredIOBufferDuration(0.005)
                       try session.setActive(true)
-                      if !engine.isRunning {
-                          engine.prepare()
-                          try engine.start()
+
+                      let eng = AVAudioEngine()
+                      let unit = AVAudioUnitTimePitch()
+
+                      let input = eng.inputNode
+                      let format = input.inputFormat(forBus: 0)
+                      guard format.channelCount > 0, format.sampleRate > 0 else {
+                          throw NSError(domain: "VoiceChanger", code: 1, userInfo: [NSLocalizedDescriptionKey: "Mic format not ready"])
                       }
-                      isRunning = true
-                      lastError = nil
-                      UserDefaults.standard.set(true, forKey: stateKey)
+
+                      eng.attach(unit)
+                      eng.connect(input, to: unit, format: format)
+                      eng.connect(unit, to: eng.mainMixerNode, format: format)
+                      eng.mainMixerNode.outputVolume = 1.0
+                      unit.overlap = 8.0
+                      unit.rate = 1.0
+                      unit.pitch = pitchSemitones * 100
+
+                      eng.prepare()
+                      try eng.start()
+
+                      self.engine = eng
+                      self.pitchUnit = unit
+                      self.isRunning = true
+                      self.lastError = nil
+                      UserDefaults.standard.set(true, forKey: self.stateKey)
                   } catch {
-                      lastError = "Audio: \(error.localizedDescription)"
-                      isRunning = false
+                      self.lastError = "Audio: \(error.localizedDescription)"
+                      self.isRunning = false
+                      self.stopInternal()
+                      try? session.setActive(false, options: .notifyOthersOnDeactivation)
                   }
               }
 
               func stop() {
-                  engine.stop()
+                  stopInternal()
                   try? session.setActive(false, options: .notifyOthersOnDeactivation)
                   isRunning = false
                   UserDefaults.standard.set(false, forKey: stateKey)
               }
 
+              private func stopInternal() {
+                  engine?.stop()
+                  engine = nil
+                  pitchUnit = nil
+              }
+
               func setPitch(semitones: Float) {
                   pitchSemitones = semitones
-                  pitchUnit.pitch = max(-2400, min(2400, semitones * 100))
+                  pitchUnit?.pitch = max(-2400, min(2400, semitones * 100))
                   UserDefaults.standard.set(semitones, forKey: pitchKey)
               }
 
               func nudgePitch(by delta: Float) { setPitch(semitones: pitchSemitones + delta) }
-
-              private func buildGraphIfNeeded() {
-                  guard !isGraphBuilt else { return }
-                  let input = engine.inputNode
-                  let format = input.inputFormat(forBus: 0)
-                  engine.attach(pitchUnit)
-                  engine.connect(input, to: pitchUnit, format: format)
-                  engine.connect(pitchUnit, to: engine.mainMixerNode, format: format)
-                  engine.mainMixerNode.outputVolume = 1.0
-                  pitchUnit.overlap = 8.0
-                  pitchUnit.rate = 1.0
-                  pitchUnit.pitch = pitchSemitones * 100
-                  isGraphBuilt = true
-              }
 
               private func requestPermission(completion: @escaping (Bool) -> Void) {
                   if #available(iOS 17.0, *) {
@@ -145,7 +158,8 @@ jobs:
                         let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
                         let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
                   switch type {
-                  case .began: DispatchQueue.main.async { self.isRunning = false }
+                  case .began:
+                      DispatchQueue.main.async { self.isRunning = false; self.stopInternal() }
                   case .ended:
                       guard let oRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
                       if AVAudioSession.InterruptionOptions(rawValue: oRaw).contains(.shouldResume) {
@@ -160,8 +174,10 @@ jobs:
                         let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
                         let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
                   switch reason {
-                  case .oldDeviceUnavailable: if isRunning { DispatchQueue.main.async { self.stop() } }
-                  case .newDeviceAvailable: if isRunning { DispatchQueue.main.async { self.start() } }
+                  case .oldDeviceUnavailable:
+                      if isRunning { DispatchQueue.main.async { self.start() } }
+                  case .newDeviceAvailable:
+                      if isRunning { DispatchQueue.main.async { self.start() } }
                   default: break
                   }
               }
@@ -272,7 +288,7 @@ jobs:
                                   Text(String(format: "%+.2f st", audio.pitchSemitones)).font(.system(size: 13, weight: .semibold, design: .monospaced)).foregroundStyle(Color(red: 0.45, green: 0.70, blue: 1.0))
                               }
                               PitchSliderView().environmentObject(audio)
-                              Text("Local mic monitoring only - other apps still receive raw mic.").font(.system(size: 10, weight: .regular, design: .rounded)).foregroundStyle(.white.opacity(0.30))
+                              Text("Right = higher, Left = deeper.").font(.system(size: 10, weight: .regular, design: .rounded)).foregroundStyle(.white.opacity(0.30))
                           }
                           .padding(18)
                           .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.035)).overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.07), lineWidth: 0.6)))
@@ -292,117 +308,6 @@ jobs:
 
               private var main: Color { audio.isRunning ? Color(red: 0.15, green: 0.78, blue: 0.35) : Color(red: 0.92, green: 0.22, blue: 0.28) }
               private var glow: Color { audio.isRunning ? .green : .red }
-          }
-          ENIFILE
-
-          cat > FloatingControlView.swift << 'ENIFILE'
-          import SwiftUI
-
-          struct FloatingControlView: View {
-              @EnvironmentObject var audio: AudioEngineManager
-              @Binding var position: CGPoint
-              @Binding var isPanelOpen: Bool
-              var onClose: () -> Void
-              @GestureState private var drag: CGSize = .zero
-              @State private var pulse: Bool = false
-              private let diameter: CGFloat = 62
-
-              var body: some View {
-                  ZStack {
-                      if isPanelOpen { compactPanel.offset(y: -110).transition(.scale.combined(with: .opacity)) }
-                      circle
-                  }
-                  .position(x: position.x + drag.width, y: position.y + drag.height)
-                  .gesture(DragGesture(minimumDistance: 2)
-                      .updating($drag) { v, s, _ in s = v.translation }
-                      .onEnded { v in position = CGPoint(x: position.x + v.translation.width, y: position.y + v.translation.height) })
-                  .onTapGesture { withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) { isPanelOpen.toggle() } }
-              }
-
-              private var circle: some View {
-                  ZStack {
-                      Circle().fill(Color.red.opacity(0.18)).frame(width: diameter + 18, height: diameter + 18).blur(radius: 10).scaleEffect(pulse ? 1.06 : 1.0)
-                      Circle()
-                          .fill(RadialGradient(colors: [Color.red.opacity(0.65), Color.red.opacity(0.38)], center: .center, startRadius: 2, endRadius: diameter / 2))
-                          .frame(width: diameter, height: diameter)
-                          .overlay(Circle().stroke(Color.white.opacity(0.35), lineWidth: 0.8))
-                          .shadow(color: Color.red.opacity(0.55), radius: 12, y: 4)
-                      Image(systemName: "waveform").font(.system(size: 22, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
-                  }
-                  .onAppear { withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { pulse = true } }
-              }
-
-              private var compactPanel: some View {
-                  VStack(spacing: 12) {
-                      HStack {
-                          Text("PITCH").font(.system(size: 11, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.55))
-                          Spacer()
-                          Button(action: { withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { isPanelOpen = false }; onClose() }) {
-                              Image(systemName: "xmark.circle.fill").font(.system(size: 18)).foregroundStyle(.white.opacity(0.65))
-                          }.buttonStyle(.plain)
-                      }
-                      PitchSliderView().environmentObject(audio)
-                      HStack(spacing: 8) {
-                          Circle().fill(audio.isRunning ? Color.green : Color.red).frame(width: 8, height: 8)
-                          Text(audio.isRunning ? "LIVE" : "IDLE").font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(.white.opacity(0.7))
-                          Spacer()
-                          Text("mic monitoring").font(.system(size: 10)).foregroundStyle(.white.opacity(0.35))
-                      }
-                  }
-                  .padding(14).frame(width: 260)
-                  .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.ultraThinMaterial).overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.white.opacity(0.08), lineWidth: 0.5)).shadow(color: .black.opacity(0.4), radius: 16, y: 8))
-              }
-          }
-          ENIFILE
-
-          cat > FloatingWindowManager.swift << 'ENIFILE'
-          import SwiftUI
-          import UIKit
-
-          final class FloatingWindowManager {
-              static let shared = FloatingWindowManager()
-              private var window: UIWindow?
-              private init() {}
-              func show(in scene: UIWindowScene, audio: AudioEngineManager) {
-                  guard window == nil else { return }
-                  let initial = CGPoint(x: scene.coordinateSpace.bounds.width - 60, y: scene.coordinateSpace.bounds.height - 160)
-                  let container = FloatingContainer(audio: audio, initialPosition: initial, onClose: { [weak self] in self?.hide() })
-                  let host = UIHostingController(rootView: container)
-                  host.view.backgroundColor = .clear
-                  let w = PassthroughWindow(windowScene: scene)
-                  w.rootViewController = host
-                  w.windowLevel = .alert + 1
-                  w.backgroundColor = .clear
-                  w.isHidden = false
-                  window = w
-              }
-              func hide() { window?.isHidden = true; window = nil }
-          }
-
-          private final class PassthroughWindow: UIWindow {
-              override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-                  guard let hit = super.hitTest(point, with: event) else { return nil }
-                  if hit == rootViewController?.view { return nil }
-                  return hit
-              }
-          }
-
-          struct FloatingContainer: View {
-              @ObservedObject var audio: AudioEngineManager
-              @State private var position: CGPoint
-              @State private var isPanelOpen: Bool = false
-              var onClose: () -> Void
-              init(audio: AudioEngineManager, initialPosition: CGPoint, onClose: @escaping () -> Void) {
-                  self.audio = audio
-                  self._position = State(initialValue: initialPosition)
-                  self.onClose = onClose
-              }
-              var body: some View {
-                  FloatingControlView(position: $position, isPanelOpen: $isPanelOpen, onClose: onClose)
-                      .environmentObject(audio)
-                      .frame(maxWidth: .infinity, maxHeight: .infinity)
-                      .background(Color.clear)
-              }
           }
           ENIFILE
 
@@ -456,8 +361,6 @@ jobs:
                 - VoiceChangerApp.swift
                 - ContentView.swift
                 - AudioEngineManager.swift
-                - FloatingControlView.swift
-                - FloatingWindowManager.swift
                 - PitchSliderView.swift
                 - Assets.xcassets
               info:
@@ -466,7 +369,7 @@ jobs:
                   CFBundleDisplayName: Voice Changer
                   CFBundleShortVersionString: "1.0"
                   CFBundleVersion: "1"
-                  NSMicrophoneUsageDescription: Voice Changer needs microphone access.
+                  NSMicrophoneUsageDescription: Voice Changer needs microphone access to process your voice.
                   UIBackgroundModes:
                     - audio
                   UILaunchScreen: {}
