@@ -69,72 +69,69 @@ jobs:
                   UserDefaults.standard.synchronize()
               }
 
+              private func errText(_ e: Error) -> String {
+                  let ns = e as NSError
+                  return "\(ns.domain)#\(ns.code): \(ns.localizedDescription)"
+              }
+
               func prepare() {
-                  mark("P1 requestPermission")
+                  mark("P1 requestPerm")
                   requestPermission { [weak self] granted in
                       DispatchQueue.main.async {
                           guard let self else { return }
                           self.hasPermission = granted
                           self.mark("P2 granted=\(granted)")
-                          if granted && UserDefaults.standard.bool(forKey: self.stateKey) {
-                              self.start()
-                          }
                       }
                   }
               }
 
-              func toggle() {
-                  if isRunning { stop() } else { start() }
-              }
+              func toggle() { if isRunning { stop() } else { start() } }
 
               func start() {
-                  mark("A enter start")
+                  mark("A enter")
                   guard hasPermission else {
-                      mark("B no permission")
+                      mark("B noPerm")
                       requestPermission { [weak self] g in
                           guard let self, g else { return }
                           DispatchQueue.main.async { self.hasPermission = true; self.start() }
                       }
                       return
                   }
-                  mark("C permission ok")
+                  mark("C permOK")
                   stopInternal()
-                  mark("D after stopInternal")
+                  mark("D stopped")
 
                   do {
                       mark("E setCategory")
                       try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-                      mark("F setPreferredSampleRate")
-                      try session.setPreferredSampleRate(44100)
-                      mark("G setActive")
+                      mark("F setActive")
                       try session.setActive(true)
-                      mark("H session active")
+                      mark("G active")
 
                       let eng = AVAudioEngine()
-                      mark("I engine created")
+                      mark("H eng")
                       let unit = AVAudioUnitTimePitch()
-                      mark("J unit created")
+                      mark("I unit")
 
                       let input = eng.inputNode
-                      mark("K input node")
-                      let format = input.inputFormat(forBus: 0)
-                      mark("L format \(Int(format.sampleRate))Hz \(format.channelCount)ch")
+                      let fmt = input.inputFormat(forBus: 0)
+                      mark("J fmt \(Int(fmt.sampleRate))Hz \(fmt.channelCount)ch")
 
-                      guard format.channelCount > 0, format.sampleRate > 0 else {
-                          throw NSError(domain: "VoiceChanger", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid mic format"])
+                      guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
+                          throw NSError(domain: "VC", code: 1, userInfo: [NSLocalizedDescriptionKey: "mic format 0Hz or 0ch"])
                       }
 
                       eng.attach(unit)
-                      mark("M attached")
-                      eng.connect(input, to: unit, format: format)
-                      mark("N connected1")
+                      mark("K attach")
+                      eng.connect(input, to: unit, format: fmt)
+                      mark("L conn1")
                       eng.connect(unit, to: eng.mainMixerNode, format: nil)
-                      mark("O connected2")
+                      mark("M conn2")
 
                       eng.prepare()
-                      mark("P prepared")
+                      mark("N prepared")
                       try eng.start()
-                      mark("Q engine started")
+                      mark("O started")
 
                       self.engine = eng
                       self.pitchUnit = unit
@@ -142,8 +139,9 @@ jobs:
                       self.lastError = nil
                       UserDefaults.standard.set(true, forKey: self.stateKey)
                   } catch {
-                      mark("ERR \(error.localizedDescription)")
-                      self.lastError = "Audio: \(error.localizedDescription)"
+                      let msg = errText(error)
+                      mark("ERR \(msg)")
+                      self.lastError = msg
                       self.isRunning = false
                       self.stopInternal()
                       try? session.setActive(false, options: .notifyOthersOnDeactivation)
@@ -185,8 +183,7 @@ jobs:
                         let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
                         let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
                   switch type {
-                  case .began:
-                      DispatchQueue.main.async { self.isRunning = false; self.stopInternal() }
+                  case .began: DispatchQueue.main.async { self.isRunning = false; self.stopInternal() }
                   case .ended:
                       guard let oRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
                       if AVAudioSession.InterruptionOptions(rawValue: oRaw).contains(.shouldResume) {
@@ -319,18 +316,25 @@ jobs:
                           .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.035)).overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.07), lineWidth: 0.6)))
                           .padding(.bottom, 8)
 
-                          VStack(spacing: 4) {
+                          VStack(alignment: .leading, spacing: 4) {
                               HStack(spacing: 6) {
                                   Circle().fill(audio.isRunning ? Color.green : Color.red).frame(width: 7, height: 7)
                                   Text(audio.isRunning ? "ACTIVE" : "INACTIVE").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.55)).tracking(1.4)
                                   Spacer()
-                                  if let e = audio.lastError { Text(e).font(.system(size: 10)).foregroundStyle(Color.red.opacity(0.7)).lineLimit(1) }
-                                  else { Text("iOS \(UIDevice.current.systemVersion)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.30)) }
+                                  Text("iOS \(UIDevice.current.systemVersion)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.30))
                               }
                               Text("step: \(audio.lastStep)")
                                   .font(.system(size: 10, weight: .regular, design: .monospaced))
-                                  .foregroundStyle(.white.opacity(0.45))
+                                  .foregroundStyle(.white.opacity(0.55))
+                                  .lineLimit(2)
                                   .frame(maxWidth: .infinity, alignment: .leading)
+                              if let e = audio.lastError {
+                                  Text("err: \(e)")
+                                      .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                      .foregroundStyle(Color.red.opacity(0.85))
+                                      .lineLimit(3)
+                                      .frame(maxWidth: .infinity, alignment: .leading)
+                              }
                           }.padding(.top, 8)
                       }
                       .padding(.horizontal, 28).padding(.vertical, 32)
@@ -401,8 +405,6 @@ jobs:
                   CFBundleShortVersionString: "1.0"
                   CFBundleVersion: "1"
                   NSMicrophoneUsageDescription: Voice Changer needs microphone access to process your voice.
-                  UIBackgroundModes:
-                    - audio
                   UILaunchScreen: {}
                   UISupportedInterfaceOrientations:
                     - UIInterfaceOrientationPortrait
