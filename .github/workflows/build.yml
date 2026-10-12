@@ -45,24 +45,37 @@ jobs:
               @Published var pitchSemitones: Float = 0.0
               @Published var hasPermission: Bool = false
               @Published var lastError: String?
+              @Published var lastStep: String = "boot"
 
               private var engine: AVAudioEngine?
               private var pitchUnit: AVAudioUnitTimePitch?
               private let session = AVAudioSession.sharedInstance()
               private let stateKey = "vc_running"
               private let pitchKey = "vc_pitch"
+              private let stepKey = "vc_step"
 
               init() {
                   pitchSemitones = UserDefaults.standard.float(forKey: pitchKey)
+                  if let prev = UserDefaults.standard.string(forKey: stepKey) {
+                      lastStep = "prev: " + prev
+                  }
                   NotificationCenter.default.addObserver(self, selector: #selector(onInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
                   NotificationCenter.default.addObserver(self, selector: #selector(onRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
               }
 
+              private func mark(_ s: String) {
+                  lastStep = s
+                  UserDefaults.standard.set(s, forKey: stepKey)
+                  UserDefaults.standard.synchronize()
+              }
+
               func prepare() {
+                  mark("P1 requestPermission")
                   requestPermission { [weak self] granted in
                       DispatchQueue.main.async {
                           guard let self else { return }
                           self.hasPermission = granted
+                          self.mark("P2 granted=\(granted)")
                           if granted && UserDefaults.standard.bool(forKey: self.stateKey) {
                               self.start()
                           }
@@ -75,41 +88,53 @@ jobs:
               }
 
               func start() {
+                  mark("A enter start")
                   guard hasPermission else {
+                      mark("B no permission")
                       requestPermission { [weak self] g in
                           guard let self, g else { return }
                           DispatchQueue.main.async { self.hasPermission = true; self.start() }
                       }
                       return
                   }
-
+                  mark("C permission ok")
                   stopInternal()
+                  mark("D after stopInternal")
 
                   do {
-                      try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+                      mark("E setCategory")
+                      try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+                      mark("F setPreferredSampleRate")
                       try session.setPreferredSampleRate(44100)
-                      try session.setPreferredIOBufferDuration(0.005)
+                      mark("G setActive")
                       try session.setActive(true)
+                      mark("H session active")
 
                       let eng = AVAudioEngine()
+                      mark("I engine created")
                       let unit = AVAudioUnitTimePitch()
+                      mark("J unit created")
 
                       let input = eng.inputNode
+                      mark("K input node")
                       let format = input.inputFormat(forBus: 0)
+                      mark("L format \(Int(format.sampleRate))Hz \(format.channelCount)ch")
+
                       guard format.channelCount > 0, format.sampleRate > 0 else {
-                          throw NSError(domain: "VoiceChanger", code: 1, userInfo: [NSLocalizedDescriptionKey: "Mic format not ready"])
+                          throw NSError(domain: "VoiceChanger", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid mic format"])
                       }
 
                       eng.attach(unit)
+                      mark("M attached")
                       eng.connect(input, to: unit, format: format)
-                      eng.connect(unit, to: eng.mainMixerNode, format: format)
-                      eng.mainMixerNode.outputVolume = 1.0
-                      unit.overlap = 8.0
-                      unit.rate = 1.0
-                      unit.pitch = pitchSemitones * 100
+                      mark("N connected1")
+                      eng.connect(unit, to: eng.mainMixerNode, format: nil)
+                      mark("O connected2")
 
                       eng.prepare()
+                      mark("P prepared")
                       try eng.start()
+                      mark("Q engine started")
 
                       self.engine = eng
                       self.pitchUnit = unit
@@ -117,6 +142,7 @@ jobs:
                       self.lastError = nil
                       UserDefaults.standard.set(true, forKey: self.stateKey)
                   } catch {
+                      mark("ERR \(error.localizedDescription)")
                       self.lastError = "Audio: \(error.localizedDescription)"
                       self.isRunning = false
                       self.stopInternal()
@@ -129,6 +155,7 @@ jobs:
                   try? session.setActive(false, options: .notifyOthersOnDeactivation)
                   isRunning = false
                   UserDefaults.standard.set(false, forKey: stateKey)
+                  mark("stopped")
               }
 
               private func stopInternal() {
@@ -174,10 +201,8 @@ jobs:
                         let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
                         let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
                   switch reason {
-                  case .oldDeviceUnavailable:
-                      if isRunning { DispatchQueue.main.async { self.start() } }
-                  case .newDeviceAvailable:
-                      if isRunning { DispatchQueue.main.async { self.start() } }
+                  case .oldDeviceUnavailable: if isRunning { DispatchQueue.main.async { self.start() } }
+                  case .newDeviceAvailable: if isRunning { DispatchQueue.main.async { self.start() } }
                   default: break
                   }
               }
@@ -294,12 +319,18 @@ jobs:
                           .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.035)).overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.07), lineWidth: 0.6)))
                           .padding(.bottom, 8)
 
-                          HStack(spacing: 6) {
-                              Circle().fill(audio.isRunning ? Color.green : Color.red).frame(width: 7, height: 7)
-                              Text(audio.isRunning ? "ACTIVE" : "INACTIVE").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.55)).tracking(1.4)
-                              Spacer()
-                              if let e = audio.lastError { Text(e).font(.system(size: 10)).foregroundStyle(Color.red.opacity(0.7)).lineLimit(1) }
-                              else { Text("iOS \(UIDevice.current.systemVersion)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.30)) }
+                          VStack(spacing: 4) {
+                              HStack(spacing: 6) {
+                                  Circle().fill(audio.isRunning ? Color.green : Color.red).frame(width: 7, height: 7)
+                                  Text(audio.isRunning ? "ACTIVE" : "INACTIVE").font(.system(size: 10, weight: .bold, design: .rounded)).foregroundStyle(.white.opacity(0.55)).tracking(1.4)
+                                  Spacer()
+                                  if let e = audio.lastError { Text(e).font(.system(size: 10)).foregroundStyle(Color.red.opacity(0.7)).lineLimit(1) }
+                                  else { Text("iOS \(UIDevice.current.systemVersion)").font(.system(size: 10)).foregroundStyle(.white.opacity(0.30)) }
+                              }
+                              Text("step: \(audio.lastStep)")
+                                  .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                  .foregroundStyle(.white.opacity(0.45))
+                                  .frame(maxWidth: .infinity, alignment: .leading)
                           }.padding(.top, 8)
                       }
                       .padding(.horizontal, 28).padding(.vertical, 32)
